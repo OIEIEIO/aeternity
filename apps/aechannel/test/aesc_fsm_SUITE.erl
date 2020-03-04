@@ -673,7 +673,7 @@ txs_not_already_on_chain(Txs) ->
 
 t_create_channel_(Cfg) ->
     Debug = get_debug(Cfg),
-    Cfg1 = [?SLOGAN | Cfg],
+    Cfg1 = [?SLOGAN | set_expected_fsm_logs(?FUNCTION_NAME, Cfg)],
     assert_empty_msgq(Debug),
 
     #{ i := #{channel_id := ChannelId} = I
@@ -682,15 +682,12 @@ t_create_channel_(Cfg) ->
 
     {ok, _} = rpc(dev1, aec_chain, get_channel, [ChannelId]),
 
-    shutdown_(I, R, Cfg),
+    shutdown_(I, R, Cfg1),
 
     {ok, #{info := {log, ILog}}} = receive_log(I, Debug),
     {ok, #{info := {log, RLog}}} = receive_log(R, Debug),
-    ok = check_log(expected_fsm_logs(?FUNCTION_NAME, initiator), ILog,
-                   initiator),
-    ok = check_log(expected_fsm_logs(?FUNCTION_NAME, responder), RLog,
-                   responder),
-
+    ok = check_fsm_log(ILog, initiator, Cfg1),
+    ok = check_fsm_log(RLog, responder, Cfg1),
     % Done
     assert_empty_msgq(Debug),
     ok.
@@ -1238,7 +1235,7 @@ close_solo_tx(#{ fsm        := Fsm
 % Test leave-reestablish flow with unclean leave, where the FSM is closed upon timeout
 leave_reestablish_close(Cfg) ->
     Debug = get_debug(Cfg),
-    Cfg1 = [?SLOGAN | Cfg],
+    Cfg1 = [?SLOGAN | set_expected_fsm_logs(?FUNCTION_NAME, Cfg)],
     assert_empty_msgq(Debug),
 
     % Do common leave-reestablish routine
@@ -1257,10 +1254,8 @@ leave_reestablish_close(Cfg) ->
 
     {ok, #{info := {log, ILog}}} = receive_log(I1, Debug),
     {ok, #{info := {log, RLog}}} = receive_log(R1, Debug),
-    ok = check_log(expected_fsm_logs(?FUNCTION_NAME, initiator), ILog,
-                   initiator),
-    ok = check_log(expected_fsm_logs(?FUNCTION_NAME, responder), RLog,
-                   responder),
+    ok = check_fsm_log(ILog, initiator, Cfg1),
+    ok = check_fsm_log(RLog, responder, Cfg1),
 
     % Ensure state is flushed gone post shutdown
     assert_cache_is_gone_after_on_disk(ChId),
@@ -1274,11 +1269,11 @@ leave_reestablish_responder_stays(Cfg) ->
     leave_reestablish_close(Cfg1).
 
 change_config_get_history(Cfg) ->
+    Cfg1 = set_expected_fsm_logs(?FUNCTION_NAME, Cfg),
     #{ i := #{fsm := FsmI} = I
-     , r := #{} = R } = create_channel_([?SLOGAN|Cfg]),
+     , r := #{} = R } = create_channel_([?SLOGAN|Cfg1]),
     ILog = rpc(dev1, aesc_fsm, get_history, [FsmI]),
-    ok = check_log(expected_fsm_logs(?FUNCTION_NAME, initiator), ILog,
-                   initiator),
+    ok = check_fsm_log(ILog, initiator, Cfg1),
     ok = rpc(dev1, aesc_fsm, change_config, [FsmI, log_keep, 17]),
     Status = rpc(dev1, sys, get_status, [FsmI]),
     check_w_param(17,Status),
@@ -1315,20 +1310,39 @@ get_both_balances(Fsm, PubI, PubR) ->
           {PubR, BalR}]} = rpc(dev1, aesc_fsm, get_balances, [Fsm, [PubI, PubR]]),
     {BalI, BalR}.
 
-check_log([{optional, Op, Type}|T], [{Op, Type, _, _}|T1], Participant) ->
-    check_log(T, T1, Participant);
-check_log([{optional, _Op, _Type}|T], T1, Participant) ->
-    check_log(T, T1, Participant);
-check_log([{Op, Type}|T], [{Op, Type, _, _}|T1], Participant) ->
-    check_log(T, T1, Participant);
-check_log([H|_], [H1|_], Participant) ->
+
+check_fsm_log(Log, Participant, Cfg) ->
+    case ?config(expected_fsm_logs, Cfg) of
+        #{ Participant := Expected } ->
+            check_log(Expected, Log, Participant);
+        undefined ->
+            ok
+    end.
+
+check_log(Expected, Log, Participant) ->
+    try check_log_(Expected, Log, Participant)
+    ?_catch_(error, Reason, _Trace)
+             ?LOG("Expected = ~p", [Expected]),
+             ?LOG("Actual = ~p", [Log]),
+             error(Reason)
+    end.
+             
+check_log_([{optional, Op, Type}|T], [{Op, Type, _, _}|T1], Participant) ->
+    check_log_(T, T1, Participant);
+check_log_([{optional, _Op, _Type}|T], T1, Participant) ->
+    check_log_(T, T1, Participant);
+check_log_([{Op, Type}|T], [{Op, Type, _, _}|T1], Participant) ->
+    check_log_(T, T1, Participant);
+check_log_([H|T], [H1|Tactual], Participant) ->
     ?LOG("ERROR: ~p expected ~p in log; got ~p",
          [Participant, H, H1]),
+    ?LOG("Tail of expected (~p): ~p", [Participant, T]),
+    ?LOG("Tail of actual (simplified): ~p", [[{Opx,Tx} || {Opx,Tx, _, _} <- Tactual]]),
     error(log_inconsistent);
-check_log([_|_], [], _) ->
+check_log_([_|_], [], _) ->
     %% the log is a sliding window; events may be flushed at the tail
     ok;
-check_log([], _, _) ->
+check_log_([], _, _) ->
     ok.
 
 fsm_up(#{info := {fsm_up, FsmId}}) when is_function(FsmId) -> ok.
@@ -1543,7 +1557,8 @@ check_incorrect_update(Cfg) ->
             ?LOG(Debug, "check incorrect update from ~p and malicious is ~p",
                  [Updator, Malicious]),
             Port = proplists:get_value(port, Cfg1, ?PORT),
-            Cfg2 = set_configs([?SLOGAN], load_idx(Cfg1)),
+            Cfg2 = set_expected_fsm_logs(
+                     ?FUNCTION_NAME, set_configs([?SLOGAN], load_idx(Cfg1))),
 
             #{ i := #{pub := IPub, fsm := FsmI} = I
              , r := #{pub := RPub, fsm := FsmR} = R
@@ -1568,10 +1583,8 @@ check_incorrect_update(Cfg) ->
             {ok, #{info := {log, ILog}}} = receive_log(I, Debug),
             {ok, #{info := {log, RLog}}} = receive_log(R, Debug),
             LogInfo = #{depositor => Updator, malicious => Malicious},
-            ok = check_log(expected_fsm_logs(?FUNCTION_NAME, initiator,
-                                             LogInfo), ILog, initiator),
-            ok = check_log(expected_fsm_logs(?FUNCTION_NAME, responder,
-                                             LogInfo), RLog, responder),
+            ok = check_fsm_log(ILog, initiator, Cfg2),
+            ok = check_fsm_log(RLog, responder, Cfg2),
 
             set_configs([{port, Port + 1}], Cfg2)
         end,
@@ -2396,9 +2409,18 @@ customize_spec(Role, Spec, Cfg) ->
     maps:merge(Spec, custom_spec_opts(Role, Cfg)).
 
 custom_spec_opts(responder, Cfg) ->
-    proplists:get_value(responder_opts, Cfg, #{});
+    custom_log_keep(responder, Cfg, proplists:get_value(responder_opts, Cfg, #{}));
 custom_spec_opts(initiator, Cfg) ->
-    proplists:get_value(initiator_opts, Cfg, #{}).
+    custom_log_keep(initiator, Cfg, proplists:get_value(initiator_opts, Cfg, #{})).
+
+custom_log_keep(Role, Cfg, Acc) ->
+    case ?config(expected_fsm_logs, Cfg) of
+        #{ Role := L } ->
+            Len = length(L),
+            Acc#{log_keep => Len + (Len div 2)};  % keep some safety margin
+        undefined ->
+            Acc
+    end.
 
 spawn_responder(Port, Spec, R, UseAny, Debug) ->
     Me = self(),
@@ -4014,31 +4036,49 @@ responder_stays(#{responder_opts := #{keep_running := Bool}}) ->
 responder_stays(_) ->
     false.
 
+set_expected_fsm_logs(FName, Config) ->
+    ExpectedLogs = #{ initiator => ExpLI = expected_fsm_logs(
+                                             FName, initiator)
+                    , responder => ExpLR = expected_fsm_logs(
+                                             FName, responder) },
+    lists:keystore(expected_fsm_logs, 1, Config,
+                   {expected_fsm_logs, ExpectedLogs}).
+
 expected_fsm_logs(Name, Role) ->
     expected_fsm_logs(Name, Role, #{}).
 
 expected_fsm_logs(leave_reestablish_loop_step_, initiator = R, #{initial_channel_open := true}) ->
     [ {evt, close}
+    , {rpt, leave}
     , {rcv, leave_ack}
     , {snd, leave}
     ] ++
     expected_fsm_logs(channel_open, R);
 expected_fsm_logs(leave_reestablish_loop_step_, initiator, #{initial_channel_open := false}) ->
     [ {evt, close}
+    , {rpt, leave}
     , {rcv, leave_ack}
     , {snd, leave}
+    , {rpt, update}              % new offchain_state
+    , {rpt, info}                % open
+    , {rpt, info}                % channel_reestablished
     , {rcv, channel_reest_ack}
     , {snd, channel_reestablish}
     ];
 expected_fsm_logs(leave_reestablish_loop_step_, responder = R, #{initial_channel_open := true}) ->
     [ {evt, close}
+    , {rpt, leave}
     , {rcv, leave}
     ] ++
     expected_fsm_logs(channel_open, R);
 expected_fsm_logs(leave_reestablish_loop_step_, responder, #{initial_channel_open := false}) ->
     [ {evt, close}
+    , {rpt, leave}
     , {rcv, leave}
+    , {rpt, update}              % new offchain_state
+    , {rpt, info}                % open
     , {snd, channel_reest_ack}
+    , {rpt, info}                % channel_reestablished
     , {rcv, channel_reestablish}
     ];
 expected_fsm_logs(t_create_channel_, initiator = R, _) ->
@@ -4049,26 +4089,34 @@ expected_fsm_logs(t_create_channel_, responder = R, _) ->
     expected_fsm_logs(channel_open, R);
 expected_fsm_logs(leave_reestablish_close, initiator = R, _) ->
     expected_fsm_logs(channel_shutdown, R) ++
-    [ {rcv, update_ack}
+    [ {rpt, update}
+    , {rcv, update_ack}
     , {snd, update}
     , {rcv, signed}
     , {req, sign}
+    , {rpt, update}              % new offchain_state
+    , {rpt, info}                % open
+    , {rpt, info}                % channel_reestablished
     , {rcv, channel_reest_ack}
     , {snd, channel_reestablish}
     ];
 expected_fsm_logs(leave_reestablish_close, responder = R, _) ->
     expected_fsm_logs(channel_shutdown, R) ++
-    [ {snd, update_ack}
+    [ {rpt, update}
+    , {snd, update_ack}
     , {rcv, signed}
     , {req, sign}
     , {rcv, update}
+    , {rpt, info}                % open
     , {snd, channel_reest_ack}
+    , {rpt, info}                % channel_reestablished
     , {rcv, channel_reestablish}
     ];
 expected_fsm_logs(check_incorrect_update, R, #{updator := U, malicious := M})
   when (R =:= initiator andalso U =:= R andalso M =:= R) orelse
        (R =:= responder andalso U =:= R andalso M =:= R) ->
-    [ {rcv, update_error}
+    [ {rpt, conflict}
+    , {rcv, update_error}
     , {snd, update}
     , {rcv, signed}
     , {req, sign}
@@ -4098,40 +4146,63 @@ expected_fsm_logs(check_incorrect_update, R, #{updator := U, malicious := M})
        (R =:= responder andalso U =/= R andalso M =:= R) ->
     [ {evt, close}
     , {rcv, disconnect}
+    , {rpt, update}
     , {snd, update_ack}
     , {rcv, signed}
     , {req, sign}
+    , {rpt, info}             % update
     , {rcv, update}
     ] ++
     expected_fsm_logs(channel_open, R);
 expected_fsm_logs(chane_config_get_history, initiator = R, #{}) ->
     expected_fsm_logs(channel_open, R);
 expected_fsm_logs(channel_open, initiator, #{}) ->
-    [ {rcv, funding_locked}
+    [ {rpt, update}            % offchain_state changed
+    , {rpt, info}              % open
+    , {rpt, info}              % funding_locked
+    , {rcv, funding_locked}
     , {snd, funding_locked}
+    , {rpt, info}              % own_funding_locked
+    , {rpt, on_chain_tx}
     , {rcv, channel_changed}
+    , {rpt, on_chain_tx}
+    , {rpt, info}              % funding_signed
     , {rcv, funding_signed}
     , {snd, funding_created}
     , {rcv, signed}
     , {req, sign}
+    , {rpt, info}              % channel_accept
     , {rcv, channel_accept}
     , {snd, channel_open}
+    , {rpt, info}              % fsm_up
     ];
 expected_fsm_logs(channel_open, responder, #{}) ->
-    [ {rcv, funding_locked}
+    [ {rpt, update}            % offchain_state changed
+    , {rpt, info}              % open
+    , {rpt, info}              % funding_locked
+    , {rcv, funding_locked}
     , {snd, funding_locked}
+    , {rpt, info}              % own_funding_locked
+    , {rpt, on_chain_tx}
     , {rcv, channel_changed}
+    , {rpt, on_chain_tx}
     , {snd, funding_signed}
     , {rcv, signed}
     , {req, sign}
+    , {rpt, info}              % funding_created
     , {rcv, funding_created}
     , {snd, channel_accept}
+    , {rpt, info}              % channel_open
     , {rcv, channel_open}
+    , {rpt, info}              % fsm_up
     ];
 expected_fsm_logs(channel_shutdown, initiator, #{}) ->
     [ {evt, close}
     , {optional, rcv, disconnect} % this can occur in case the min depth achieved is delayed
+    , {rpt, on_chain_tx}
     , {rcv, channel_closed}
+    , {rpt, info}              % closing
+    , {rpt, on_chain_tx}
     , {rcv, shutdown_ack}
     , {snd, shutdown}
     , {rcv, signed}
@@ -4140,10 +4211,14 @@ expected_fsm_logs(channel_shutdown, initiator, #{}) ->
 expected_fsm_logs(channel_shutdown, responder, #{}) ->
     [ {evt, close}
     , {optional, rcv, disconnect} % this can occur in case the min depth achieved is delayed
+    , {rpt, on_chain_tx}
     , {rcv, channel_closed}
+    , {rpt, info}             % closing
+    , {rpt, on_chain_tx}
     , {snd, shutdown_ack}
     , {rcv, signed}
     , {req, sign}
+    , {rpt, info}             % shutdown
     , {rcv, shutdown}
     ];
 expected_fsm_logs(_, _, _) -> [].

@@ -315,6 +315,9 @@ process_request(#{<<"method">> := <<"channels.system">>,
                   <<"params">> := #{<<"action">> := <<"stop">>}}, FsmPid) ->
     ok = aesc_fsm:stop(FsmPid),
     no_reply;
+process_request(#{<<"method">> := <<"channels.log.fetch">>,
+                  <<"params">> := Params}, FsmPid) ->
+    no_reply;
 process_request(#{<<"method">> := <<"channels.update.new">> = M,
                    <<"params">> := #{<<"from">>    := FromB,
                                      <<"to">>      := ToB,
@@ -727,6 +730,7 @@ merge_params({error, _} = Error, _) ->
 merge_params(Map1, Map2) when is_map(Map1), is_map(Map2) ->
     maps:merge(Map1, Map2).
 
+optional_params(<<"channels.log.fetch">>) -> [n_param()];
 optional_params(<<"channels.update.new">>           ) -> offchain_update_params();
 optional_params(<<"channels.update.new_contract">>  ) -> offchain_update_params();
 optional_params(<<"channels.update.call_contract">> ) -> offchain_update_params();
@@ -773,3 +777,5 @@ gas_price_param() ->
 nonce_param() ->
     {<<"nonce">>, nonce, #{ type => integer }}.
 
+n_param() ->
+    {<<"n">>, n, #{ type => integer }}.
