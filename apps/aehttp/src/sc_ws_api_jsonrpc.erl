@@ -707,7 +707,7 @@ fold_history(Entry, Acc) ->
             Acc
     end.
 
-
+-dialyzer({no_return, acc_history/5}).
 acc_history(Type, Tag, TS, Info, Acc) ->
      [#{ type => Type
        , tag  => atom_to_binary(Tag, utf8)
@@ -734,13 +734,13 @@ encode_info_(K, V) ->
     try case {K, V} of
             {tx, Tx} when is_binary(Tx) ->
                 Tx;
-            {tx, Tx} when is_tuple(Tx) ->
+            {tx, Tx} ->
                 aetx_sign:serialize_to_binary(Tx);
             {signed_tx, Tx} ->
                 aetx_sign:serialize_to_binary(Tx);
             {channel, Ch} when is_map(Ch) ->
                 Ch;
-            {channel, Ch} when is_tuple(Ch) ->
+            {channel, Ch} ->
                 aesc_channels:serialize_for_client(Ch);
             {info, I} ->
                 encode_info(I);
@@ -759,6 +759,7 @@ snd_rcv_type(rcv) -> <<"receive">>.
 %% In later OTP versions, there is a function in calendar for converting
 %% timestamps to RFC3339. For now, use the rfc3339 lib (which we have already),
 %% and stick to UTZ.
+-dialyzer({nowarn_function, format_date_time/1}).
 format_date_time({_,_,Us} = OSTime) ->
     {Date, Time} = calendar:now_to_universal_time(OSTime),
     {ok, Str} = rfc3339:format({Date, Time, Us, 0}),
