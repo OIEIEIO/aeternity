@@ -682,6 +682,9 @@ t_create_channel_(Cfg) ->
 
     {ok, _} = rpc(dev1, aec_chain, get_channel, [ChannelId]),
 
+    ?LOG("Rpts = ~p", [rpc(dev1, aesc_fsm, get_history, [maps:get(fsm, I),
+                                                         #{n => 5, type => [rpt]}])]),
+
     shutdown_(I, R, Cfg1),
 
     {ok, #{info := {log, ILog}}} = receive_log(I, Debug),
@@ -1326,7 +1329,7 @@ check_log(Expected, Log, Participant) ->
              ?LOG("Actual = ~p", [Log]),
              error(Reason)
     end.
-             
+
 check_log_([{optional, Op, Type}|T], [{Op, Type, _, _}|T1], Participant) ->
     check_log_(T, T1, Participant);
 check_log_([{optional, _Op, _Type}|T], T1, Participant) ->
@@ -2312,7 +2315,7 @@ ch_loop(I, R, Parent, Cfg) ->
             {_, I1, R1} = do_n(N, fun update_volley/3, I, R, Cfg),
             Parent ! {self(), loop_ack},
             ch_loop(I1, R1, Parent, Cfg);
-        {msgs, N} ->
+        {msgs, N} = _M ->
             {_, I1, R1} = do_n(N, fun msg_volley/3, I, R, Cfg),
             Parent ! {self(), loop_ack},
             ch_loop(I1, R1, Parent, Cfg);
@@ -4063,6 +4066,7 @@ expected_fsm_logs(leave_reestablish_loop_step_, initiator, #{initial_channel_ope
     , {rpt, info}                % open
     , {rpt, info}                % channel_reestablished
     , {rcv, channel_reest_ack}
+    , {rpt, info}                % fsm_up
     , {snd, channel_reestablish}
     ];
 expected_fsm_logs(leave_reestablish_loop_step_, responder = R, #{initial_channel_open := true}) ->
@@ -4098,6 +4102,7 @@ expected_fsm_logs(leave_reestablish_close, initiator = R, _) ->
     , {rpt, info}                % open
     , {rpt, info}                % channel_reestablished
     , {rcv, channel_reest_ack}
+    , {rpt, info}                % fsm_up
     , {snd, channel_reestablish}
     ];
 expected_fsm_logs(leave_reestablish_close, responder = R, _) ->
@@ -4173,8 +4178,8 @@ expected_fsm_logs(channel_open, initiator, #{}) ->
     , {req, sign}
     , {rpt, info}              % channel_accept
     , {rcv, channel_accept}
-    , {snd, channel_open}
     , {rpt, info}              % fsm_up
+    , {snd, channel_open}
     ];
 expected_fsm_logs(channel_open, responder, #{}) ->
     [ {rpt, update}            % offchain_state changed

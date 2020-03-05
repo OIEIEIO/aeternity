@@ -59,6 +59,7 @@
         , dry_run_contract/2   %% (fsm(), map()) -> {ok, call()} | {error, _}
         , get_balances/2       %% (fsm(), {ok, [key()]) -> [{key(), amount()}]} | {error, _}
         , get_history/1        %% (fsm()) -> [Event]
+        , get_history/2        %% (fsm(), Opts) -> [Event]
         , get_round/1          %% (fsm()) -> {ok, round()} | {error, _}
         , patterns/0
         , prune_local_calls/1  %% (fsm()) -> {ok, round()} | {error, _}
@@ -311,8 +312,11 @@ timeouts() ->
 
 %% @doc Fetch the list of recent fsm events (sliding window)
 get_history(Fsm) ->
+    get_history(Fsm, #{}).
+
+get_history(Fsm, Opts) when is_map(Opts) ->
     lager:debug("get_history(~p)", [Fsm]),
-    gen_statem:call(Fsm, get_history).
+    gen_statem:call(Fsm, {get_history, Opts}).
 
 change_config(Fsm, Key, Value) ->
     case check_change_config(Key, Value) of
@@ -1181,7 +1185,7 @@ open(cast, {?WDRAW_CREATED, Msg}, D) ->
     end;
 open(cast, {?SIGNED, _, _} = Msg, D) ->
     lager:debug("Received signing reply in 'open' - ignore: ~p", [Msg]),
-    keep_state(log(ignore, ?SIGNED, Msg, D));
+    keep_state(log(drop, ?SIGNED, Msg, D));
 open({call, From}, {attach_responder, #{reestablish := true} = Info} = _Req,
      #data{ peer_connected = false, opts = Opts } = D) ->
     lager:debug("call: ~p; D = ~p", [_Req, pr_data(D)]),
@@ -3280,20 +3284,26 @@ report(Tag, Info, D) ->
                                  , tag  => Tag
                                  , info => Info }, D).
 
-report_info(DoRpt, Msg, #data{client_connected = false} = D) ->
-    lager:debug("No client. DoRpt = ~p, Msg = ~p", [DoRpt, Msg]),
-    D;
-report_info(DoRpt, Msg0, #data{role = Role, client = Client} = D) ->
+report_info(DoRpt, Msg0, #data{ role = Role
+                              , client_connected = Connected
+                              , client = Client} = D) ->
     if DoRpt ->
             Msg = rpt_message(Msg0, D),
             lager:debug("~p report_info(true, Client = ~p, Msg = ~p)",
                         [Role, Client, Msg]),
-            Client ! {?MODULE, self(), Msg},
+            maybe_send_rpt(Connected, Client, Msg),
             log(rpt, maps:get(tag, Msg), Msg, D);
        true  ->
             lager:debug("~p report_info(~p, ~p)", [Role, DoRpt, Msg0]),
             D
     end.
+
+maybe_send_rpt(true, Client, Msg) ->
+    Client ! {?MODULE, self(), Msg},
+    ok;
+maybe_send_rpt(false, _, Msg) ->
+    lager:debug("No client. Msg = ~p", [Msg]),
+    ok.
 
 rpt_message(Msg, #data{on_chain_id = undefined}) ->
     Msg;
@@ -3314,6 +3324,39 @@ log_msg(Op, Type, M, Log) ->
 
 win_to_list(Log) ->
     aesc_window:to_list(Log).
+
+filter_log(Log, Opts) ->
+    N = maps:get(n, Opts, 10),
+    {_, Res} = aesc_window:match(
+                 fun(Msg, Acc) ->
+                         match_f(Msg, Acc, Opts)
+                 end, {N, []}, Log),
+    lists:reverse(Res).
+
+match_f({Type, Tag, _TS, _M} = Entry, {N, Found} = Acc, Opts) ->
+    case match_filter(type, Type, Opts)
+        andalso match_filter(tag, Tag, Opts) of
+        true ->
+            Found1 = [Entry|Found],
+            case N - 1 of
+                N1 when N1 =< 0 ->
+                    {done, {N1, Found1}};
+                N1 ->
+                    {cont, {N1, Found1}}
+            end;
+        false ->
+            {cont, Acc}
+    end.
+
+match_filter(Key, Val, Opts) ->
+    case Opts of
+        #{Key := L} ->
+            lists:member(Val, L);
+        _ ->
+            %% allow if no filter on Key
+            true
+    end.
+
 
 process_update_error({off_chain_update_error, Reason}, From, D) ->
     keep_state(D, [{reply, From, {error, Reason}}]);
@@ -4546,8 +4589,8 @@ handle_call_(_, {get_poi, Filter}, From, #data{state = State} = D) ->
             {error, _} -> {error, not_found}
         end,
     keep_state(D, [{reply, From, Response}]);
-handle_call_(_St, get_history, From, #data{log = Log} = D) ->
-    keep_state(D, [{reply, From, win_to_list(Log)}]);
+handle_call_(_St, {get_history, Opts}, From, #data{log = Log} = D) ->
+    keep_state(D, [{reply, From, filter_log(Log, Opts)}]);
 handle_call_(_St, {change_config, Key, Value}, From, D) ->
     case handle_change_config(Key, Value, D) of
         {ok, D1} ->
