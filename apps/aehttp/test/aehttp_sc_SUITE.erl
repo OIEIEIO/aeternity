@@ -3725,7 +3725,7 @@ sc_ws_get_history(Config) ->
     ct:log("Res1 = ~p", [Res1]),
     [_,_,_] = Res1,
     %%
-    Res2 = call_fetch_rpc(Pid, #{n => 1, type => [rpt]}),
+    Res2 = call_fetch_rpc(Pid, #{n => 1, type => [rpt], tag => [update]}),
     ct:log("Res2 = ~p", [Res2]),
     [#{<<"type">> := <<"report">>}] = Res2,
     %%

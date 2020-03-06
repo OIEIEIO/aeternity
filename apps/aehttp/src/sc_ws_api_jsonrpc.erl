@@ -732,19 +732,44 @@ try_encode(Enc) ->
 
 encode_info_(K, V) ->
     try case {K, V} of
+            {chain_hash, H} ->
+                %% No predefined type for chain_hash - use bytearray
+                aeser_api_encoder:encode(bytearray, H);
             {tx, Tx} when is_binary(Tx) ->
-                Tx;
+                aeser_api_encoder:encode(transaction, Tx);
             {tx, Tx} ->
-                aetx_sign:serialize_to_binary(Tx);
+                aeser_api_encoder:encode(transaction, aetx_sign:serialize_to_binary(Tx));
+            {channel_id, Id} ->
+                aeser_api_encoder:encode(channel, Id);
+            {chan_id, Id} ->
+                aeser_api_encoder:encode(channel, Id);
+            {temporary_channel_id, Id} ->
+                aeser_api_encoder:encode(channel, Id);
+            {block_hash, H} ->
+                aeser_api_encoder:encode(micro_block_hash, H);
+            {tx_hash, H} ->
+                aeser_api_encoder:encode(tx_hash, H);
+            {_, Id} when K == initiator;
+                         K == responder;
+                         K == from;
+                         K == to ->
+                aeser_api_encoder:encode(account_pubkey, Id);
+            {to, Id} ->
+                aeser_api_encoder:encode(account_pubkey, Id);
             {signed_tx, Tx} ->
-                aetx_sign:serialize_to_binary(Tx);
+                aeser_api_encoder:encode(transaction, aetx_sign:serialize_to_binary(Tx));
             {channel, Ch} when is_map(Ch) ->
                 Ch;
             {channel, Ch} ->
                 aesc_channels:serialize_for_client(Ch);
             {info, I} ->
                 encode_info(I);
+            {data, D} when is_map(D) ->
+                encode_info(D);
+            {_, Bin} when is_binary(Bin) ->
+                aeser_api_encoder:encode(bytearray, Bin);
             _ ->
+                lager:debug("UNKNOWN K=~p, V=~p", [K, V]),
                 V
         end
     catch
