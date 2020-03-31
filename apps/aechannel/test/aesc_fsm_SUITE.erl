@@ -1867,8 +1867,24 @@ wrong_sig_action(ChannelStuff, Poster, Malicious,
     wrong_sig_action(ChannelStuff, Poster, Malicious,
                   FsmStuff,
                   fun(Who, DebugL) ->
-                      {ok, _} = receive_from_fsm(conflict, Who, any_msg(), ?TIMEOUT, DebugL)
+                      {ok, _} = R1 = receive_from_fsm(
+                                       conflict, Who, any_msg(),
+                                       ?TIMEOUT, DebugL),
+                      if Poster =:= Malicious ->
+                              {ok, _} = receive_from_fsm(
+                                          conflict,
+                                          peer(Poster, ChannelStuff),
+                                          any_msg(),
+                                          ?TIMEOUT, DebugL);
+                         true ->
+                              R1
+                      end
                   end).
+
+peer(initiator, {_I, R, _Spec, _Port, _Debug}) ->
+    R;
+peer(responder, {I, _R, _Spec, _Port, _Debug}) ->
+    I.
 
 wrong_sig_action({I, R, _Spec, _Port, Debug}, Poster, Malicious,
                  {FsmFun, FsmFunArg, FsmNewAction, FsmCreatedAction},
